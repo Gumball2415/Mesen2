@@ -5,12 +5,14 @@
 class ModChannel : public BaseFdsChannel
 {
 private:
-	const int16_t ModReset = 0xFF;
-	const int16_t _modLut[8] = { 0,1,2,4,ModReset,-4,-2,-1 };
+	const int8_t ModReset = -0x80;
+	const int8_t _modLut[8] = { 0,1,2,4,ModReset,-4,-2,-1 };
 
 	int8_t _counter = 0;
 	bool _modCounterDisabled = false;
+	bool _modCounterDisabledLatch = false;
 	bool _forceCarryOut = false;
+	bool _bit11CarryOut = false;
 
 	uint32_t _modAccumulator = 0;		//18-bit accumulator
 	uint8_t _modM2Counter = 0;
@@ -24,18 +26,20 @@ protected:
 		BaseFdsChannel::Serialize(s);
 		
 		SVArray(_modTable, 32);
-		SV(_counter); SV(_modCounterDisabled); SV(_forceCarryOut); SV(_modTablePosition); SV(_modAccumulator); SV(_modM2Counter); SV(_output);
+		SV(_counter); SV(_modCounterDisabled); SV(_modCounterDisabledLatch); SV(_forceCarryOut); SV(_bit11CarryOut); SV(_modTablePosition); SV(_modAccumulator); SV(_modM2Counter); SV(_output);
 	}
 
 	void IncrementAccumulator(uint32_t value)
 	{
+		if(value == 0) return;
+		_bit11CarryOut = (((_modAccumulator + value) & 0xFFF) < (_modAccumulator & 0xFFF));
 		_modAccumulator += value;
 		if(_modAccumulator > 0x3FFFF) {
 			_modAccumulator -= 0x40000;
 		}
 	}
 
-	void UpdateModPosition()
+	void UpdateModTablePosition()
 	{
 		_modTablePosition = (_modAccumulator >> 13) & 0x1F;
 	}
@@ -60,26 +64,12 @@ public:
 					// "Bits 0-12 are reset by 4087.7=1. Bits 13-17 have no reset."
 					_modAccumulator &= 0x3E000;
 				}
+				else {
+					// reset latch
+					_modCounterDisabledLatch = _modCounterDisabled;
+				}
 				break;
 		}
-	}
-
-	bool TickEnvelope()
-	{
-		if(!_envelopeOff && _masterSpeed > 0) {
-			_timer--;
-			if(_timer == 0) {
-				ResetTimer();
-
-				if(_volumeIncrease && _gain < 32) {
-					_gain++;
-				} else if(!_volumeIncrease && _gain > 0) {
-					_gain--;
-				}
-				return true;
-			}
-		}
-		return false;
 	}
 
 	void WriteModTable(uint8_t value)
@@ -89,43 +79,40 @@ public:
 			// "Writing $4088 increments the address (bits 13-17) when 4087.7=1."
 			_modTable[_modTablePosition] = value & 0x07;
 			IncrementAccumulator(0x2000);
-			UpdateModPosition();
+			UpdateModTablePosition();
 		}
 	}
 
 	void UpdateCounter(int8_t value)
 	{
-		// "The mod table counter is stopped, that's all.
-		// The freq mod formula is ALWAYS in effect, 4084/4085 still modify the wave frequency."
-		if(!_modCounterDisabled) {
-			_counter = value;
-			if(_counter >= 64) {
-				_counter -= 128;
-			} else if(_counter < -64) {
-				_counter += 128;
-			}
+		_counter = value;
+		if(_counter >= 64) {
+			_counter -= 128;
+		} else if(_counter < -64) {
+			_counter += 128;
 		}
-	}
-
-	bool IsEnabled()
-	{
-		return _frequency > 0;
 	}
 
 	bool TickModulator(bool haltWaveform)
 	{
-		// $4083.7 also stops the mod table accumulator
-		if(IsEnabled() && !haltWaveform && ++_modM2Counter == 16) {
-			IncrementAccumulator(_frequency);
-
-			// "On a carry out from bit 11, update the mod counter (increment $4085 with modtable)."
-			// "4087.6 forces a carry out from bit 11."
-			if((_modAccumulator & 0xFFF) < _frequency || _forceCarryOut) {
-				int16_t offset = _modLut[_modTable[_modTablePosition]];
-				UpdateCounter(offset == ModReset ? 0 : _counter + offset);
-				UpdateModPosition();
+		if(++_modM2Counter == 16) {
+			// $4083.7 also stops the mod table accumulator
+			if(!haltWaveform) {
+				IncrementAccumulator(_forceCarryOut ? 0x1000 : _frequency);
+				// "On a carry out from bit 11, update the mod counter (increment $4085 with modtable)."
+				if(_bit11CarryOut || _forceCarryOut) {
+					if(!_modCounterDisabledLatch) {
+						// delayed latch
+						_modCounterDisabledLatch = _modCounterDisabled;
+						int8_t offset = _modLut[_modTable[_modTablePosition]];
+						// for some odd reason, only mod reset comes through
+						// but not anything else when delayed latch is just turned on
+						UpdateCounter(offset == ModReset ? 0 : _modCounterDisabledLatch ? _counter : _counter + offset);
+					}
+					// update mod position *after* updating counter
+					UpdateModTablePosition();
+				}
 			}
-
 			_modM2Counter = 0;
 			return true;
 		}
@@ -156,6 +143,25 @@ public:
 	int8_t GetCounter()
 	{
 		return _counter;
+	}
+
+	int8_t GetCounterIncrement()
+	{
+		int8_t offset = _modLut[_modTable[_modTablePosition]];
+		if(offset == ModReset) {
+			return 0xC;
+		}
+
+		offset = _modCounterDisabledLatch ? 0 : offset;
+
+		// convert to 7-bit signed
+		if(offset < 0) {
+			offset += 8;
+		}
+		// sign extend to bit 7
+		offset &= 0x7;
+		offset |= (offset & 0x4) << 1;
+		return offset;
 	}
 
 	uint32_t GetModAccumulator()

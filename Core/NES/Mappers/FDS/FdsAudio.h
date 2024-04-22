@@ -22,7 +22,7 @@ private:
 	BaseFdsChannel _volume;
 	ModChannel _mod;
 
-	bool _disableEnvelopes = false;
+	bool _haltEnvelopes = false;
 	bool _haltWaveform = false;
 
 	uint8_t _masterVolume = 0;

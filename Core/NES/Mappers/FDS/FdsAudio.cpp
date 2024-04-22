@@ -17,15 +17,15 @@ void FdsAudio::Serialize(Serializer& s)
 	SVArray(_waveTable, 64);
 	SV(_volume);
 	SV(_mod);
-	SV(_waveWriteEnabled); SV(_disableEnvelopes); SV(_haltWaveform); SV(_masterVolume); SV(_waveAccumulator); SV(_waveM2Counter); SV(_wavePitch); SV(_wavePosition); SV(_lastOutput); SV(_lastGain);
+	SV(_waveWriteEnabled); SV(_haltEnvelopes); SV(_haltWaveform); SV(_masterVolume); SV(_waveAccumulator); SV(_waveM2Counter); SV(_wavePitch); SV(_wavePosition); SV(_lastOutput); SV(_lastGain);
 }
 
 void FdsAudio::ClockAudio()
 {
 	uint16_t frequency = _volume.GetFrequency();
-	if(!_haltWaveform && !_disableEnvelopes) {
-		_volume.TickEnvelope();
-		if(_mod.TickEnvelope()) {
+	if(!_haltEnvelopes) {
+		_volume.TickEnvelope(_haltWaveform);
+		if(_mod.TickEnvelope(_haltWaveform)) {
 			_mod.UpdateOutput(frequency);
 		}
 	}
@@ -36,19 +36,19 @@ void FdsAudio::ClockAudio()
 		_mod.UpdateOutput(frequency);
 	}
 
-	if(++_waveM2Counter == 16) {
-		if(_haltWaveform) {
-			_waveAccumulator = 0;
-		} else {
-
-			if(!_waveWriteEnabled) {
-				_waveAccumulator += (frequency * _mod.GetOutput()) & 0xFFFFF;
-				if(_waveAccumulator > 0xFFFFFF) {
-					_waveAccumulator -= 0x1000000;
-				}
-
-				_wavePosition = (_waveAccumulator >> 18) & 0x3F;
+	if(_haltWaveform) {
+		// "Accumulator is reset when 4083.7=1.
+		_waveAccumulator = 0;
+		_wavePosition = (_waveAccumulator >> 18) & 0x3F;
+	}
+	// "wave_pitch is added to accumulator every 16th M2 clock."
+	else if(++_waveM2Counter == 16) {
+		if(!_waveWriteEnabled) {
+			_waveAccumulator += ((uint32_t)frequency * (uint32_t)_mod.GetOutput()) & 0xFFFFF;
+			if(_waveAccumulator > 0xFFFFFF) {
+				_waveAccumulator -= 0x1000000;
 			}
+			_wavePosition = (_waveAccumulator >> 18) & 0x3F;
 		}
 		_waveM2Counter = 0;
 	}
@@ -102,19 +102,21 @@ uint8_t FdsAudio::ReadRegister(uint16_t addr)
 		value |= _volume.GetGain();
 	} else if(addr == 0x4091) {
 		// Wave accumulator
-		value &= 0xC0;
-		value |= (_waveAccumulator >> 12) & 0xFF;
+		value = (_waveAccumulator >> 12) & 0xFF;
 	} else if(addr == 0x4092) {
 		value &= 0xC0;
 		value |= _mod.GetGain();
 	} else if(addr == 0x4093) {
 		// Mod accumulator
-		value &= 0xC0;
+		value &= 0x80;
 		value |= (_mod.GetModAccumulator() >> 5) & 0x7F;
 	} else if(addr == 0x4094) {
 		// wave pitch intermediate result
-		value &= 0xC0;
-		value |= (_mod.GetOutput() >> 4) & 0xFF;
+		value = (_mod.GetOutput() >> 4) & 0xFF;
+	} else if(addr == 0x4095) {
+		// mod counter increment
+		value &= 0xF0;
+		value |= _mod.GetCounterIncrement();
 	} else if(addr == 0x4096) {
 		// wavetable position
 		value &= 0xC0;
@@ -142,9 +144,9 @@ void FdsAudio::WriteRegister(uint16_t addr, uint8_t value)
 				break;
 
 			case 0x4083:
-				_disableEnvelopes = (value & 0x40) != 0;
+				_haltEnvelopes = (value & 0x40) != 0;
 				_haltWaveform = (value & 0x80) != 0;
-				if(_disableEnvelopes) {
+				if(_haltEnvelopes) {
 					_volume.ResetTimer();
 					_mod.ResetTimer();
 				}
@@ -189,7 +191,7 @@ void FdsAudio::GetMapperStateEntries(vector<MapperStateEntry>& entries)
 	entries.push_back(MapperStateEntry("$4080.6", "Envelope Direction", _volume.GetVolumeIncreaseFlag() ? "Increase" : "Decrease", _volume.GetVolumeIncreaseFlag()));
 	entries.push_back(MapperStateEntry("$4080.7", "Envelope Disabled", _volume.IsEnvelopeDisabled(), MapperStateValueType::Bool));
 	entries.push_back(MapperStateEntry("$4082/3.0-11", "Frequency", _volume.GetFrequency(), MapperStateValueType::Number16));
-	entries.push_back(MapperStateEntry("$4083.6", "Volume/Mod Envelopes Disabled", _disableEnvelopes, MapperStateValueType::Bool));
+	entries.push_back(MapperStateEntry("$4083.6", "Volume/Mod Envelopes Disabled", _haltEnvelopes, MapperStateValueType::Bool));
 	
 	entries.push_back(MapperStateEntry("$4083.7", "Halt Wave Form", _haltWaveform, MapperStateValueType::Bool));
 

@@ -55,12 +55,14 @@ public:
 		}
 	}
 
-	bool TickEnvelope()
+	virtual bool TickEnvelope(bool haltWaveform)
 	{
 		if(!_envelopeOff && _masterSpeed > 0) {
-			_timer--;
-			if(_timer == 0) {
+			// "When enabled, envelopes run 4x faster."
+			_timer -= haltWaveform ? 4 : 1;
+			if(_timer <= 0) {
 				ResetTimer();
+
 				if(_volumeIncrease && _gain < 32) {
 					_gain++;
 				} else if(!_volumeIncrease && _gain > 0) {
@@ -104,6 +106,6 @@ public:
 
 	void ResetTimer()
 	{
-		_timer = 8 * (_speed + 1) * _masterSpeed;
+		_timer = 8 * (_speed + 1) * (_masterSpeed + 1);
 	}
 };
