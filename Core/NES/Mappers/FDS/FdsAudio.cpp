@@ -59,13 +59,13 @@ void FdsAudio::UpdateOutput()
 {
 	// "Changes to the volume envelope only take effect while the wavetable
 	// pointer (top 6 bits of wave accumulator) is 0."
+	// changes to the volume envelope take effect immediately when muting
 	if(_wavePosition == 0) {
-		_lastGain = _volume.GetGain();
+		_lastGain = std::min(_volume.GetGain(), uint8_t(32));
 	}
-	uint8_t level = std::min(_lastGain, uint8_t(32));
 
 	// volume level is PWM, but can be approximated linearly
-	uint8_t outputLevel = uint8_t(DACTable[_waveTable[_wavePosition]][_masterVolume] * float(level));
+	uint8_t outputLevel = uint8_t(DACTable[_masterVolume][_waveTable[_wavePosition]] * float(_lastGain));
 
 	if(_lastOutput != outputLevel) {
 		_console->GetApu()->AddExpansionAudioDelta(AudioChannel::FDS, outputLevel - _lastOutput);
@@ -77,11 +77,11 @@ FdsAudio::FdsAudio(NesConsole* console) : BaseExpansionAudio(console)
 {
 	// initialize DAC LUT
 	// data comes from plgDavid's DC capture of an FDS's DAC output
-	// data capture shared from the NESDev server
+	// using MDFourier FDS
 	// TODO: generate data based from FDS decap DAC schematics
 	for(int masterlevel = 0; masterlevel < 4; masterlevel++) {
 		for(int wavelevel = 0; wavelevel < 64; wavelevel++) {
-			DACTable[wavelevel][masterlevel] = (FDS_LUT_norm[wavelevel] * 64.0 * float(WaveVolumeTable[masterlevel])) / 1152.0;
+			DACTable[masterlevel][wavelevel] = FDS_LUT_norm[masterlevel][wavelevel] * 36.0 * 64.0 / 1152.0;
 		}
 	}
 }
